@@ -10,6 +10,7 @@ import numba
 import time
 import concurrent.futures
 import traceback
+import os
 sns.set_style("darkgrid")
 
 # ===================  raw prado frac diff function ======================================================
@@ -442,7 +443,8 @@ def load_and_preprocess_data(file_path, tickers, _nmonic, _start_yr=2005):
     df = df[~((df.index.month == 2) & (df.index.day == 29))]
     df = df[df.index.year >= _start_yr]
 
-    selected_columns = [f"{ticker.lower()}_{_nmonic}" for ticker in tickers]
+    # Modify this line to handle both cases
+    selected_columns = [f"{ticker.lower()}_{_nmonic}" if _nmonic else ticker.lower() for ticker in tickers]
     return df[selected_columns]
 
 # =================== new seasonal fucntions===================================================================
@@ -544,13 +546,24 @@ def calculate_bollinger_bands(df, column, _lookbck, _stdv):
 def process_tickers(df, df_sa, df_fracdiff, tickers, _nmonic, _dval, _lookbck, _stdv, yrs_indx, _plt_all=False, _plt_1st=True):
     result_df = pd.DataFrame()
     for ticker in tickers:
-        raw_column = f"{ticker}_{_nmonic}"
-        sa_column = f"{ticker}_{_nmonic}_sa"
-        possible_fracdiff_columns = [
-            f"{ticker}_{_nmonic}_sa_d{_dval}",
-            f"{sa_column}_d{_dval}",
-            f"{sa_column}_fracdiff"
-        ]
+        # Determine if we're dealing with a raw column name or a ticker with suffix
+        if _nmonic:
+            raw_column = f"{ticker}_{_nmonic}"
+            sa_column = f"{ticker}_{_nmonic}_sa"
+            possible_fracdiff_columns = [
+                f"{ticker}_{_nmonic}_sa_d{_dval}",
+                f"{sa_column}_d{_dval}",
+                f"{sa_column}_fracdiff"
+            ]
+        else:
+            raw_column = ticker
+            sa_column = f"{ticker}_sa"
+            possible_fracdiff_columns = [
+                f"{ticker}_sa_d{_dval}",
+                f"{sa_column}_d{_dval}",
+                f"{sa_column}_fracdiff"
+            ]
+
         fracdiff_column = next((col for col in possible_fracdiff_columns if col in df_fracdiff.columns), None)
 
         if raw_column not in df.columns or sa_column not in df_sa.columns or fracdiff_column is None:
@@ -558,44 +571,44 @@ def process_tickers(df, df_sa, df_fracdiff, tickers, _nmonic, _dval, _lookbck, _
             continue
 
         # Raw data
-        result_df[f"{ticker}_{_nmonic}_raw"] = df[raw_column]
+        result_df[f"{raw_column}_raw"] = df[raw_column]
 
-        # Seasonally adjusted data
-        result_df[f"{ticker}_{_nmonic}_seas_adj_cv"] = df_sa[sa_column]
+        # Seasonally adjusted data with yrs_indx method in the column name
+        result_df[f"{raw_column}_seas_adj_cv_{yrs_indx}"] = df_sa[sa_column]
 
         # Seasonal component
         if yrs_indx == 'pct':
-            result_df[f"{ticker}_{_nmonic}_seas_cv"] = df[raw_column] / df_sa[sa_column] - 1
+            result_df[f"{raw_column}_seas_cv_{yrs_indx}"] = df[raw_column] / df_sa[sa_column] - 1
         else:  # 'abs' or None
-            result_df[f"{ticker}_{_nmonic}_seas_cv"] = df[raw_column] - df_sa[sa_column]
+            result_df[f"{raw_column}_seas_cv_{yrs_indx}"] = df[raw_column] - df_sa[sa_column]
 
         # Fractionally differenced data
-        result_df[f"{ticker}_{_nmonic}_seas_adj_fracd_{_dval}"] = df_fracdiff[fracdiff_column]
+        result_df[f"{raw_column}_seas_adj_fracd_{_dval}"] = df_fracdiff[fracdiff_column]
 
         # Bollinger Bands
         lower_bb, upper_bb = calculate_bollinger_bands(df_fracdiff, fracdiff_column, _lookbck, _stdv)
-        result_df[f"{ticker}_{_nmonic}_seas_adj_fracd_{_dval}_bol_low_{_lookbck}_{_stdv}std"] = lower_bb
-        result_df[f"{ticker}_{_nmonic}_seas_adj_fracd_{_dval}_bol_high_{_lookbck}_{_stdv}std"] = upper_bb
+        result_df[f"{raw_column}_seas_adj_fracd_{_dval}_bol_low_{_lookbck}_{_stdv}std"] = lower_bb
+        result_df[f"{raw_column}_seas_adj_fracd_{_dval}_bol_high_{_lookbck}_{_stdv}std"] = upper_bb
 
         # Difference between fractionally differenced data and Bollinger Bands
-        result_df[f"{ticker}_{_nmonic}_seas_adj_fracd_{_dval}_bol_low_diff"] = df_fracdiff[fracdiff_column] - lower_bb
-        result_df[f"{ticker}_{_nmonic}_seas_adj_fracd_{_dval}_bol_high_diff"] = upper_bb - df_fracdiff[fracdiff_column]
+        result_df[f"{raw_column}_seas_adj_fracd_{_dval}_bol_low_diff"] = df_fracdiff[fracdiff_column] - lower_bb
+        result_df[f"{raw_column}_seas_adj_fracd_{_dval}_bol_high_diff"] = upper_bb - df_fracdiff[fracdiff_column]
 
     if _plt_all:
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 16))
 
         # First chart: Seasonal Component for All Tickers
         for ticker in tickers:
-            seas_cv_column = f"{ticker}_{_nmonic}_seas_cv"
+            seas_cv_column = f"{ticker}_seas_cv_{yrs_indx}" if not _nmonic else f"{ticker}_{_nmonic}_seas_cv_{yrs_indx}"
             sns.lineplot(x=result_df.index, y=result_df[seas_cv_column], ax=ax1, label=ticker, linewidth=0.8, alpha=0.9)
-        ax1.set_title("Seasonal Component for All Tickers")
+        ax1.set_title(f"Seasonal Component for All Tickers ({yrs_indx})")
         ax1.legend()
 
         # Second chart: Correlation Matrix
-        seas_cv_columns = [f"{ticker}_{_nmonic}_seas_cv" for ticker in tickers]
+        seas_cv_columns = [f"{ticker}_seas_cv_{yrs_indx}" if not _nmonic else f"{ticker}_{_nmonic}_seas_cv_{yrs_indx}" for ticker in tickers]
         corr_matrix = result_df[seas_cv_columns].corr()
         sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', vmin=-1, vmax=1, center=0, ax=ax2)
-        ax2.set_title("Correlation Matrix of Seasonal Components")
+        ax2.set_title(f"Correlation Matrix of Seasonal Components ({yrs_indx})")
         ax2.set_xticklabels(tickers, rotation=45, ha='right')
         ax2.set_yticklabels(tickers, rotation=0)
         ax2.set_xlabel('')
@@ -605,26 +618,23 @@ def process_tickers(df, df_sa, df_fracdiff, tickers, _nmonic, _dval, _lookbck, _
     if _plt_1st:  # only plot the first ticker
         fig, axs = plt.subplots(3, 1, figsize=(14, 17), sharex=True)
         ticker = tickers[0]
-        raw_column = f"{ticker}_{_nmonic}_raw"
-        sa_column = f"{ticker}_{_nmonic}_seas_adj_cv"
-        seas_cv_column = f"{ticker}_{_nmonic}_seas_cv"
-        seas_adj_fracd_column = f"{ticker}_{_nmonic}_seas_adj_fracd_{_dval}"
+        raw_column = f"{ticker}_raw" if not _nmonic else f"{ticker}_{_nmonic}_raw"
+        sa_column = f"{ticker}_seas_adj_cv_{yrs_indx}" if not _nmonic else f"{ticker}_{_nmonic}_seas_adj_cv_{yrs_indx}"
+        seas_cv_column = f"{ticker}_seas_cv_{yrs_indx}" if not _nmonic else f"{ticker}_{_nmonic}_seas_cv_{yrs_indx}"
+        seas_adj_fracd_column = f"{ticker}_seas_adj_fracd_{_dval}" if not _nmonic else f"{ticker}_{_nmonic}_seas_adj_fracd_{_dval}"
         axs[0].plot(result_df.index, result_df[raw_column], label="Raw", linewidth=0.8, alpha=0.9)
         axs[0].plot(result_df.index, result_df[sa_column], label="Seas Adj", linewidth=0.8, alpha=0.9)
-        sns.lineplot(x=result_df.index, y=result_df[seas_cv_column], ax=axs[1], label=seas_cv_column, linewidth=0.8,
-                     alpha=0.9)
-        sns.lineplot(x=result_df.index, y=result_df[seas_adj_fracd_column], ax=axs[2], label=seas_adj_fracd_column,
-                     linewidth=0.8, alpha=0.9)
+        sns.lineplot(x=result_df.index, y=result_df[seas_cv_column], ax=axs[1], label=seas_cv_column, linewidth=0.8, alpha=0.9)
+        sns.lineplot(x=result_df.index, y=result_df[seas_adj_fracd_column], ax=axs[2], label=seas_adj_fracd_column, linewidth=0.8, alpha=0.9)
         axs[0].legend()
         axs[1].legend()
         axs[2].legend()
-        axs[0].set_title(f"{ticker} - Raw and Seasonally Adjusted Data")
-        axs[1].set_title(f"{ticker} - Seasonal Component")
+        axs[0].set_title(f"{ticker} - Raw and Seasonally Adjusted Data ({yrs_indx})")
+        axs[1].set_title(f"{ticker} - Seasonal Component ({yrs_indx})")
         axs[2].set_title(f"{ticker} - Fractionally Differenced Data")
         axs[0].set_xlabel("")
         axs[1].set_xlabel("")
         plt.tight_layout()
-        # plt.subplots_adjust(hspace=0.3)
         plt.show()
 
     return result_df
@@ -640,25 +650,37 @@ def main():
     """
 
     # input_file = r"C:\Optima Labs Dropbox\Omega Files\Omega_History_New.csv"
-    input_file = r"C:\Optima Labs Dropbox\WAS\was_balance_sheet\_raps_.csv"
+    # input_file = r"C:\Optima Labs Dropbox\WAS\was_balance_sheet\_raps_.csv"
+    input_file = r"C:\Optima Labs Dropbox\livestock\meat_seasonal_feats_to_transform_.csv"
 
     tickers = [
-            'cl',
 
-            'c',
-            's',
-            'w',
+        # 'us90_imp90_sprd',
+        '90s_50s_ratio',
+        # 'pork',
+        'pork_ex_belly',
+        '73s_vs_pork_ex_bel',
+        'beef_less_middles',
 
-            'lc',
-            'lh',
+            # 'cl',
+
+            # 'c',
+            # 's',
+            # 'w',
+
+            # 'lc',
+            # 'lh',
             # 'fc', #not available? odd
+
+            # 'kw',
+            # 'es',
 
             # 'cl',
 
     ]
 
-    _nmonic = "rap"  #column= ticker__nmonic eg. c_rap
-    _dval = 0.15 # 0.1, through 0.6 seem to work most often for us.
+    _nmonic = ""  #column= ticker__nmonic eg. c_rap #note leave "" if no nmonic for raw ticker
+    _dval = 0.4 # 0.1, through 0.6 seem to work most often for us.
     _thresh = 0.01 #unless you are dealing with S&P 500 data, this is a good thresh with log=False
     _lookbck = 365  # You can adjust this
     _stdv = 1.75  # Number of standard deviations for Bollinger Bands
@@ -684,7 +706,7 @@ def main():
     # Apply fractional differencing (3 options)
     # df_fracdiff = apply_fracDiff_FFD(df_sa, _dval, _thresh) # prado raw # 13 seconds
     # df_fracdiff = apply_fracdiff(df_sa, _dval) # uses scikit learn, faster, trust it less. less control #  1.3 seconds
-    df_fracdiff = loop_dval_csv_optimized_parallel(df_sa, df_sa.columns, [_dval], _thresh, _log=False) #prado fast # 3.5-.8 seconds
+    df_fracdiff = loop_dval_csv_optimized_parallel(df_sa, df_sa.columns, [_dval], _thresh, _log=True) #prado fast # 3.5-.8 seconds
 
 
 # ========== plotting functions ================================================================================
@@ -698,13 +720,12 @@ def main():
     #note: _plt_1st will plot the first ticker in the list so you can see the raw, seasonal, and fracdiff data
 
     final_df = process_tickers(df, df_sa, df_fracdiff, tickers, _nmonic, _dval,
-                               _lookbck, _stdv, _yrs_index, _plt_all=False, _plt_1st=False)
+                               _lookbck, _stdv, _yrs_index, _plt_all=True, _plt_1st=True)
     final_df.index.name = 'date'
-    output_path = fr"C:\Optima Labs Dropbox\Feature_Data\seas_adj_fracd_outputs\{_nmonic}_{_dval}_{_yrs_index}_transformed.csv"
+    output_path = fr"C:\Optima Labs Dropbox\Feature_Data\seas_adj_fracd_outputs\{_nmonic}_{_dval}_{_yrs_index}_meats_log.csv"
     final_df.to_csv(output_path, index=True, index_label='date')
     print(f"Processed data saved to {output_path}")
 
 
 if __name__ == "__main__":
     main()
-
